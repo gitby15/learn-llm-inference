@@ -4,10 +4,18 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "asyncio>=4.0.0",
+    "fastapi>=0.141.1",
+    "transformers>=5.16.1",
+    "uvicorn>=0.52.4",
+    "torch==2.8.0",
+    "accelerate>=1.14.0",
+    "tokenizers>=0.23.1",
+]
 
 [project.scripts]
-learn-llm-inference = "learn_llm_inference:main"
+tim-inf = "learn_llm_inference.http_server.router:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
