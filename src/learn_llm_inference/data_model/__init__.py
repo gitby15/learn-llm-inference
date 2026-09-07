@@ -1,32 +1,35 @@
-from pydantic import BaseModel
+from typing import Any, TypedDict
+from dataclasses import dataclass
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+import torch
 
-
-class ChatMessage(BaseModel):
+class ChatMessage(TypedDict):
     role: str
     content: str
 
 
-class ChatRequest(BaseModel):
-    model: str
-    messages: list[ChatMessage]
-
-
-class ChatChoice_(BaseModel):
-    index: int
-    message: ChatMessage
-    finish_reason: str
-
-
-class ChatUsage_(BaseModel):
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-
-
-class ChatResponse(BaseModel):
+@dataclass(slots=True)
+class TokenizeRequest:
     id: str
-    object: str
-    created: int
-    model: str
-    choices: list[ChatChoice_]
-    usage: ChatUsage_
+    messages: list[ChatMessage]
+    # Todo: 未来再支持max_tokens、温度、topK等参数
+
+
+@dataclass(slots=True)
+class PrefillRequest:
+    id: str
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    
+@dataclass(slots=True)
+class DecodeRequest:
+    id: str
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    kv_cache: Any
+    generated_len: int = 1
+
+@dataclass(slots=True)
+class DetokenizeRequest:
+    id: str
+    logits: torch.Tensor

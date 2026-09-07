@@ -5,18 +5,23 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "asyncio>=4.0.0",
     "fastapi>=0.141.1",
-    "transformers>=5.16.1",
+    "transformers>=5.0.0",
     "uvicorn>=0.52.4",
-    "torch==2.8.0",
+    "torch>=2.8.0",
     "accelerate>=1.14.0",
-    "tokenizers>=0.23.1",
+    "tokenizers>=0.23.0",
+    "guidellm[recommended]>=0.7.3",
 ]
 
 [project.scripts]
-tim-inf = "learn_llm_inference.http_server.router:main"
+tim-inf = "learn_llm_inference.http_server.launch:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "vllm[bench]==0.10.2",
+]
