@@ -29,6 +29,14 @@ class Generator:
             raise RuntimeError("模型未加载")
         return model
 
+    def get_eos_token_ids(self) -> frozenset[int]:
+        eos_token_id = self._get_model().generation_config.eos_token_id
+        if eos_token_id is None:
+            return frozenset()
+        if isinstance(eos_token_id, int):
+            return frozenset((eos_token_id,))
+        return frozenset(eos_token_id)
+
     @torch.inference_mode()
     def prefill(
         self,
@@ -48,11 +56,15 @@ class Generator:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         kv_cache: Any,
+        position_ids: torch.Tensor | None = None,
     ) -> CausalLMOutputWithPast:
         model = self._get_model()
         return model(
             input_ids=input_ids.to(model.device),
             attention_mask=attention_mask.to(model.device),
             past_key_values=kv_cache,
+            position_ids=(
+                position_ids.to(model.device) if position_ids is not None else None
+            ),
             use_cache=True,
         )

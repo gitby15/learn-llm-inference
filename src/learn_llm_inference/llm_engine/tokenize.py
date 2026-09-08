@@ -17,6 +17,7 @@ class Tokenizer:
     _instance = None
     _tokenizer:PreTrainedTokenizerBase
     _eos_id: int
+    _pad_id: int
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -31,6 +32,7 @@ class Tokenizer:
 
             cls._tokenizer = _tokenizer
             cls._eos_id = _tokenizer.eos_token_id
+            cls._pad_id = _tokenizer.pad_token_id
 
         return cls._instance
 
@@ -41,8 +43,8 @@ class Tokenizer:
 
     def get_eos_id(self):
         return self.__class__._eos_id
-    def get_padding_id(self):
-        return self.__class__._tokenizer.pad_token_id
+    def get_padding_id(self) -> int:
+        return self.__class__._pad_id
                
 
     def encode(
@@ -67,12 +69,15 @@ class Tokenizer:
         )
         return cast(PrefillInput, result)
 
-    def detokenizer(self, logits: torch.Tensor):
-        tokenizer = self._get_tokenizer()
-        result = tokenizer.batch_decode(logits, skip_special_tokens=True)
-        return result
 
-    def detokenizer_output_only(self, total_logits: torch.Tensor, input_ids: torch.Tensor):
-        result = self.detokenizer(total_logits[:, input_ids.shape[-1]:])
-        return result
+
+    def decode(self, token_ids: list[int]) -> str:
+        tokenizer = self._get_tokenizer()
+        return tokenizer.decode(
+            token_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
+
        

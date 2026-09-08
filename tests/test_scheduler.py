@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import torch
 
-from learn_llm_inference.scheduler.base_scheduler import (
+from learn_llm_inference.llm_engine.base_scheduler import (
     TaskIterator,
     TaskRequest,
     WaitingList,
@@ -60,10 +60,10 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         FakeGenerator.decode_calls = 0
         self.patches = (
-            patch("learn_llm_inference.scheduler.base_scheduler.Tokenizer", FakeTokenizer),
-            patch("learn_llm_inference.scheduler.base_scheduler.Generator", FakeGenerator),
+            patch("learn_llm_inference.llm_engine.base_scheduler.Tokenizer", FakeTokenizer),
+            patch("learn_llm_inference.llm_engine.base_scheduler.Generator", FakeGenerator),
             patch(
-                "learn_llm_inference.scheduler.base_scheduler.DecodeStream",
+                "learn_llm_inference.llm_engine.base_scheduler.DecodeStream",
                 FakeDecodeStream,
             ),
         )

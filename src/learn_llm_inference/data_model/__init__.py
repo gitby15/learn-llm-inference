@@ -1,6 +1,5 @@
 from typing import Any, TypedDict
 from dataclasses import dataclass
-from pydantic import AliasChoices, BaseModel, Field, field_validator
 import torch
 
 class ChatMessage(TypedDict):
@@ -24,12 +23,24 @@ class PrefillRequest:
 @dataclass(slots=True)
 class DecodeRequest:
     id: str
-    input_ids: torch.Tensor
+    token_id: torch.Tensor # 应该是一个零维标量
     attention_mask: torch.Tensor
     kv_cache: Any
     generated_len: int = 1
 
 @dataclass(slots=True)
-class DetokenizeRequest:
+class ResponseRequest:
     id: str
-    logits: torch.Tensor
+    token_id: int
+    generated_len: int
+    finished: bool = False
+    finish_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ResponseChunk:
+    id: str
+    text: str
+    generated_len: int
+    finished: bool = False
+    finish_reason: str | None = None

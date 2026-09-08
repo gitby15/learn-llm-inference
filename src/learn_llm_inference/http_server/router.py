@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 import json
+import time
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -41,9 +42,11 @@ class ChatResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
     app_.state.test = "test"
+    await bridge_instance.start()
     try:
         yield
     finally:
+        await bridge_instance.stop()
         del app_.state.test
 
 
@@ -59,24 +62,52 @@ app.add_middleware(
 @app.get("/health")
 async def healthy() -> dict[str, str]:
     return {"status": "healthy"}
-
+    
 
 # 为了方便调试，暂时打开GET
 @app.post("/v1/chat/completions")
 async def openai_api(
     request: OpenAIRequest,
-    http_request: Request,
 ) -> StreamingResponse:
     id = f"chatcmpl-{uuid4().hex}"
     tokenize_req = TokenizeRequest(
         id=id,
         messages=request.messages,
     )
-    response_queue = await bridge_instance.commit_request(tokenize_req)
+    response_worker = await bridge_instance.commit_request(tokenize_req)
 
     async def event_generator():
-        async for chunk in await response_queue.get():
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        first_chunk = True
+        async for chunk in response_worker.get_stream_response():
+            print("chunk: ", chunk)
+            delta = {"content": chunk.text}
+            if first_chunk:
+                delta["role"] = "assistant"
+                first_chunk = False
+
+            payload = {
+                "id": chunk.id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": (
+                            chunk.finish_reason if chunk.finished else None
+                        ),
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
