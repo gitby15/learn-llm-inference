@@ -1,5 +1,4 @@
 import asyncio
-from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -8,61 +7,10 @@ from transformers import DynamicCache
 
 from learn_llm_inference.bridge._utils import worker_lifecycle
 from learn_llm_inference.bridge.global_state import GlobalState
-from learn_llm_inference.bridge.prefill_worker import _split_kv_cache
 from learn_llm_inference.data_model import DecodeRequest, ResponseRequest
 from learn_llm_inference.llm_engine.generate import Generator
 from learn_llm_inference.llm_engine.sample import sample_token
-
-
-def _merge_kv_caches(requests: list[DecodeRequest]) -> DynamicCache:
-    raw_caches = [request.kv_cache for request in requests]
-    if not all(isinstance(cache, DynamicCache) for cache in raw_caches):
-        cache_types = ", ".join(type(cache).__name__ for cache in raw_caches)
-        raise TypeError(f"Expected DynamicCache instances, got: {cache_types}")
-    caches = [cast(DynamicCache, cache) for cache in raw_caches]
-
-    layer_count = len(caches[0].layers)
-    if any(len(cache.layers) != layer_count for cache in caches):
-        raise ValueError("Cannot batch KV caches with different layer counts")
-
-    cache_data: list[tuple[torch.Tensor | None, ...]] = []
-    for layer_index in range(layer_count):
-        layer_states: list[tuple[torch.Tensor | None, torch.Tensor | None]] = []
-        for cache in caches:
-            layer = cache.layers[layer_index]
-            keys = getattr(layer, "keys", None)
-            values = getattr(layer, "values", None)
-            layer_states.append((keys, values))
-
-        if all(keys is None and values is None for keys, values in layer_states):
-            cache_data.append((None, None))
-            continue
-        if any(keys is None or values is None for keys, values in layer_states):
-            raise ValueError(f"Inconsistent KV cache state at layer {layer_index}")
-
-        initialized_states = [
-            (cast(torch.Tensor, keys), cast(torch.Tensor, values))
-            for keys, values in layer_states
-        ]
-        max_cache_length = max(keys.shape[-2] for keys, _ in initialized_states)
-        batched_keys = torch.cat(
-            [
-                F.pad(keys, (0, 0, max_cache_length - keys.shape[-2], 0))
-                for keys, _ in initialized_states
-            ],
-            dim=0,
-        )
-        batched_values = torch.cat(
-            [
-                F.pad(values, (0, 0, max_cache_length - values.shape[-2], 0))
-                for _, values in initialized_states
-            ],
-            dim=0,
-        )
-        cache_data.append((batched_keys, batched_values))
-
-    return DynamicCache(ddp_cache_data=cache_data)
-
+from learn_llm_inference.llm_engine.kv_cache import split_kv_cache, merge_kv_caches
 
 @worker_lifecycle
 class _DecodeWorker:
@@ -75,8 +23,7 @@ class _DecodeWorker:
         max_batch = GlobalState.get_max_batch()
 
         while True:
-            first_request = await self._input_queue.get()
-            batch_requests = [first_request]
+            batch_requests = [await self._input_queue.get()]
             while len(batch_requests) < max_batch and not self._input_queue.empty():
                 batch_requests.append(await self._input_queue.get())
 
@@ -90,7 +37,7 @@ class _DecodeWorker:
                 padding_value=0,
                 padding_side="left",
             )
-            batch_kv_cache = _merge_kv_caches(batch_requests)
+            batch_kv_cache = merge_kv_caches(batch_requests)
             input_length = batch_input_ids.shape[-1]
             position_ids = (
                 batch_attention_mask.long().cumsum(dim=-1)[:, -input_length:] - 1
@@ -136,7 +83,7 @@ class _DecodeWorker:
                     continue
 
                 valid_mask = batch_attention_mask[batch_index].bool()
-                request_cache = _split_kv_cache(
+                request_cache = split_kv_cache(
                     updated_batch_cache,
                     batch_index,
                     valid_mask,

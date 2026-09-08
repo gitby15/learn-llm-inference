@@ -11,31 +11,9 @@ from learn_llm_inference.data_model import DecodeRequest, ResponseRequest
 from learn_llm_inference.llm_engine.generate import Generator
 from learn_llm_inference.llm_engine.sample import sample_token
 from learn_llm_inference.llm_engine.tokenize import Tokenizer
+from learn_llm_inference.llm_engine.kv_cache import split_kv_cache
 
 
-def _split_kv_cache(
-    batch_cache: DynamicCache,
-    batch_index: int,
-    valid_mask: torch.Tensor,
-) -> DynamicCache:
-    cache_data: list[tuple[torch.Tensor | None, ...]] = []
-    for layer in batch_cache.layers:
-        keys = getattr(layer, "keys", None)
-        values = getattr(layer, "values", None)
-        if keys is None or values is None:
-            cache_data.append((None, None))
-            continue
-
-        key_mask = valid_mask.to(keys.device)
-        value_mask = valid_mask.to(values.device)
-        cache_data.append(
-            (
-                keys[batch_index : batch_index + 1, :, key_mask, :],
-                values[batch_index : batch_index + 1, :, value_mask, :],
-            )
-        )
-
-    return DynamicCache(ddp_cache_data=cache_data)
 
 
 @worker_lifecycle
@@ -87,22 +65,26 @@ class _PrefillWorker:
 
             # 把batch的输出拆成单个req送入下一步
             for batch_index, task_req in enumerate(batch_requests):
-                valid_mask = batch_attention_mask[batch_index].bool()
-                request_logits = batch_output_logits[batch_index, valid_mask, :]
+                bool_mask = batch_attention_mask[batch_index].bool()
+                request_logits = batch_output_logits[batch_index, bool_mask, :]
                 next_token_id = sample_token(request_logits[-1]).view(1, 1)
+                # 因为多生成了一个token，所以原始mask需要多加一位，值为1（因为不需要被ignore）
                 request_attention_mask = torch.cat(
                     (
-                        batch_attention_mask[batch_index, valid_mask],
+                        batch_attention_mask[batch_index, bool_mask],
                         batch_attention_mask.new_ones(1),
                     )
                 ).unsqueeze(0)
 
-                request_kv_cache = _split_kv_cache(
+
+                # Todo(Important): 这一段KV Cache的处理是AI写的，我还没学会
+                request_kv_cache = split_kv_cache(
                     batch_kv_cache,
                     batch_index,
-                    valid_mask,
+                    bool_mask,
                 )
 
+                # Todo: 这里会产生一次GPU -> CPU的数据搬运，在循环中会反复多次，后面可以跟sample一起优化成batch处理
                 token_id = int(next_token_id.item())
                 finish_reason = None
                 if token_id in self._eos_token_ids:
@@ -117,6 +99,8 @@ class _PrefillWorker:
                 )
                 response_queue = GlobalState.get_response_queue(task_req.id)
                 await response_queue.put(response_req)
+
+                # 如果在prefill的时候就结束了，就不用走下一个阶段了
                 if finish_reason is not None:
                     continue
 

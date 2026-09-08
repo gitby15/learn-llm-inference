@@ -18,7 +18,6 @@ class _ResponseWorker:
         )
         self._tokenizer = Tokenizer()
         self._token_cache: list[int] = []
-        self._print_len = 0
         self._next_generated_len = 1
         self._task = asyncio.create_task(
             self._process_task(),
@@ -26,15 +25,6 @@ class _ResponseWorker:
         )
 
     async def _process_task(self) -> None:
-        try:
-            await self._run()
-        except Exception as exc:
-            await self._output_queue.put(exc)
-        finally:
-            GlobalState.remove_response_queue(self._id)
-            await self._output_queue.put(_STREAM_END)
-
-    async def _run(self) -> None:
         while True:
             request = await self._input_queue.get()
             if request.id != self._id:
@@ -50,7 +40,7 @@ class _ResponseWorker:
 
             self._token_cache.append(request.token_id)
             text = self._tokenizer.decode(self._token_cache)
-            chunk_text = self._flush_text(text) if request.finished else self._stable_text(text)
+            chunk_text = self._take_text(text, finished=request.finished)
 
             if chunk_text or request.finished:
                 await self._output_queue.put(
@@ -67,28 +57,19 @@ class _ResponseWorker:
                 return
             self._next_generated_len += 1
 
-    def _stable_text(self, text: str) -> str:
-        if text.endswith("\n"):
-            printable_text = text[self._print_len :]
-            self._token_cache.clear()
-            self._print_len = 0
-            return printable_text
+    def _take_text(self, text: str, *, finished: bool) -> str:
+        # 达到输出条件，就输出当前缓存中的文本
+        # 输出条件：decode结束了、完成一行、一个单词、一个中文字符
+        can_output = (
+            finished
+            or text.endswith((" ", "\n"))
+            or bool(text and self._is_cjk_character(ord(text[-1])))
+        )
+        if not can_output:
+            return ""
 
-        if text and self._is_cjk_character(ord(text[-1])):
-            printable_text = text[self._print_len :]
-            self._print_len = len(text)
-            return printable_text
-
-        printable_end = text.rfind(" ") + 1
-        printable_text = text[self._print_len : printable_end]
-        self._print_len = printable_end
-        return printable_text
-
-    def _flush_text(self, text: str) -> str:
-        printable_text = text[self._print_len :]
         self._token_cache.clear()
-        self._print_len = 0
-        return printable_text
+        return text
 
     async def get_stream_response(self) -> AsyncIterator[ResponseChunk]:
         while True:
