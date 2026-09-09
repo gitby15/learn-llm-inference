@@ -14,7 +14,7 @@ batch_client = [1,2,4,8,16]
 async def main():
     # 先启动项目服务：uv run tim-inf，默认监听 http://127.0.0.1:8888
     timestamp_suffix = str(int(time.time()))[-6:]
-    output_dir = Path("benchmark/outputs") / timestamp_suffix
+    output_dir = Path("benchmark/results") / timestamp_suffix
     output_dir.mkdir(parents=True, exist_ok=True)
 
     scenario = BenchmarkScenario.create(
