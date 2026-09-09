@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+
 import json
 import time
 from uuid import uuid4
@@ -6,9 +7,9 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from learn_llm_inference.data_model import ChatMessage, TokenizeRequest
+from learn_llm_inference.data_model import ChatMessage, TokenizeRequest, MetaInfo
 from learn_llm_inference.bridge.bridge_engine import bridge_instance
 
 
@@ -16,6 +17,9 @@ class OpenAIRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
     ignore_eos: bool = False
+    # 这俩有一个就行，max_tokens是旧版本，max_completion_tokens是新版本
+    max_tokens: int | None = Field(default=None, gt=0)
+    max_completion_tokens: int | None = Field(default=None, gt=0)
 
 
 class ChatChoice_(BaseModel):
@@ -71,10 +75,13 @@ async def openai_api(
 ) -> StreamingResponse:
     id = f"chatcmpl-{uuid4().hex}"
     tokenize_req = TokenizeRequest(
-        id=id,
+        meta_info=MetaInfo(
+            id=id,
+            max_tokens=request.max_completion_tokens or request.max_tokens or 512,
+        ),
         messages=request.messages,
     )
-    response_worker = await bridge_instance.commit_request(tokenize_req)
+    response_worker, remove_response_worker = await bridge_instance.commit_request(tokenize_req)
 
     async def event_generator():
         first_chunk = True
@@ -93,14 +100,13 @@ async def openai_api(
                     {
                         "index": 0,
                         "delta": delta,
-                        "finish_reason": (
-                            chunk.finish_reason if chunk.finished else None
-                        ),
+                        "finish_reason": chunk.finish_reason,
                     }
                 ],
             }
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
+        remove_response_worker(id)
 
     return StreamingResponse(
         event_generator(),

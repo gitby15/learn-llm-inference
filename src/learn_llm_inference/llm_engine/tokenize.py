@@ -73,11 +73,17 @@ class Tokenizer:
 
     def decode(self, token_ids: list[int]) -> str:
         tokenizer = self._get_tokenizer()
-        return tokenizer.decode(
+        result = tokenizer.decode(
             token_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
+        if isinstance(result, str):
+            return result
+        else:
+            err_msg = f"tokenizer.decode return {result}, expect str"
+            print(err_msg)
+            raise ValueError(err_msg)
 
 
        

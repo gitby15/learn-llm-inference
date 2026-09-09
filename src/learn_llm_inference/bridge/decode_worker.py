@@ -66,16 +66,18 @@ class _DecodeWorker:
                 generated_len = request.generated_len + 1
                 token_id = int(next_token_id.item())
                 finish_reason = None
+                
+                if generated_len >= request.meta_info.max_tokens:
+                    finish_reason = "length"
                 if token_id in self._eos_token_ids:
-                    finish_reason = "stop"
+                                    finish_reason = "stop"
 
-                response_queue = GlobalState.get_response_queue(request.id)
+                response_queue = GlobalState.get_response_queue(request.meta_info.id)
                 await response_queue.put(
                     ResponseRequest(
-                        id=request.id,
+                        meta_info=request.meta_info,
                         token_id=token_id,
                         generated_len=generated_len,
-                        finished=finish_reason is not None,
                         finish_reason=finish_reason,
                     )
                 )
@@ -98,7 +100,7 @@ class _DecodeWorker:
 
                 await self._input_queue.put(
                     DecodeRequest(
-                        id=request.id,
+                        meta_info=request.meta_info,
                         token_id=next_token_id,
                         attention_mask=request_attention_mask,
                         kv_cache=request_cache,
@@ -109,28 +111,3 @@ class _DecodeWorker:
             # Queue operations may complete immediately; yield so cancellation is observed.
             await asyncio.sleep(0)
 
-
-if __name__ == "__main__":
-    from learn_llm_inference.bridge.bridge_engine import bridge_instance
-    from learn_llm_inference.data_model import TokenizeRequest
-
-    async def test():
-        await bridge_instance.start()
-        try:
-            request = TokenizeRequest(
-                id="123",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": "Who are you? Please briefly introduce yourself.",
-                    }
-                ],
-            )
-
-            response_worker = await bridge_instance.commit_request(request)
-            response = await anext(response_worker.get_stream_response())
-
-        finally:
-            await bridge_instance.stop()
-
-    asyncio.run(test(), debug=True)

@@ -2,38 +2,50 @@ from typing import Any, TypedDict
 from dataclasses import dataclass
 import torch
 
+
+
 class ChatMessage(TypedDict):
     role: str
     content: str
 
 
 @dataclass(slots=True)
-class TokenizeRequest:
+class MetaInfo:
     id: str
+    max_tokens: int = 512
+    # Todo: 后面再支持这些
+    # temperature: float = 0.7
+    # top_k: int = 50
+
+@dataclass(slots=True)
+class TokenizeRequest:
+    meta_info: MetaInfo
     messages: list[ChatMessage]
-    # Todo: 未来再支持max_tokens、温度、topK等参数
+    
 
 
 @dataclass(slots=True)
 class PrefillRequest:
-    id: str
+    meta_info: MetaInfo
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     
+    
 @dataclass(slots=True)
 class DecodeRequest:
-    id: str
+    meta_info: MetaInfo
     token_id: torch.Tensor # 应该是一个零维标量
     attention_mask: torch.Tensor
     kv_cache: Any
     generated_len: int = 1
+    
+    
 
 @dataclass(slots=True)
 class ResponseRequest:
-    id: str
+    meta_info: MetaInfo
     token_id: int
     generated_len: int
-    finished: bool = False
     finish_reason: str | None = None
 
 
@@ -42,5 +54,4 @@ class ResponseChunk:
     id: str
     text: str
     generated_len: int
-    finished: bool = False
     finish_reason: str | None = None

@@ -19,28 +19,8 @@ class _TokenizeWorker:
             request = await self._tokenize_queue.get()
             tokenize_result = self._tokenizer.encode(request.messages)
             prefill_req = PrefillRequest(
-                id=request.id,
+                meta_info=request.meta_info,
                 input_ids = tokenize_result['input_ids'],
                 attention_mask = tokenize_result['attention_mask'],
             )
             await self._prefill_queue.put(prefill_req)
-
-
-if __name__ == "__main__":
-    from learn_llm_inference.bridge.bridge_engine import bridge_instance
-
-    async def test():
-        worker = cast(Worker, _TokenizeWorker())
-        worker.start()
-        try:
-            request = TokenizeRequest(
-                id="123",
-                messages=[{"role": "user", "content": "Who are you? Please briefly introduce yourself."}],
-            )
-
-            await bridge_instance.commit_request(request)
-            prefill_item = await GlobalState.get_prefill_queue().get()
-        finally:
-            await worker.stop()
-    
-    asyncio.run(test())

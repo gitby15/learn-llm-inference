@@ -14,8 +14,6 @@ from learn_llm_inference.llm_engine.tokenize import Tokenizer
 from learn_llm_inference.llm_engine.kv_cache import split_kv_cache
 
 
-
-
 @worker_lifecycle
 class _PrefillWorker:
     def __init__(self):
@@ -32,7 +30,8 @@ class _PrefillWorker:
             batch_requests = [await self._prefill_queue.get()]
             # 收集一个batch的req
             while len(batch_requests) < _max_batch and not self._prefill_queue.empty():
-                batch_requests.append(self._prefill_queue.get_nowait())
+                request = await self._prefill_queue.get()
+                batch_requests.append(request)
 
             # 补齐长度
             batch_input_ids = pad_sequence(
@@ -49,7 +48,9 @@ class _PrefillWorker:
             )
 
             # prefill这个batch，前面都是CPU任务，prefill是GPU任务
-            prefill_result = self._prefiller.prefill(batch_input_ids, batch_attention_mask)
+            prefill_result = self._prefiller.prefill(
+                batch_input_ids, batch_attention_mask
+            )
 
             # 现在的形状的[B, T, C]
             batch_output_logits = prefill_result.logits
@@ -76,7 +77,6 @@ class _PrefillWorker:
                     )
                 ).unsqueeze(0)
 
-
                 # Todo(Important): 这一段KV Cache的处理是AI写的，我还没学会
                 request_kv_cache = split_kv_cache(
                     batch_kv_cache,
@@ -90,22 +90,24 @@ class _PrefillWorker:
                 if token_id in self._eos_token_ids:
                     finish_reason = "stop"
 
-                response_req = ResponseRequest(
-                    id=task_req.id,
-                    token_id=token_id,
-                    generated_len=1,
-                    finished=finish_reason is not None,
-                    finish_reason=finish_reason,
+                if task_req.meta_info.max_tokens <= 1:
+                    finish_reason = "length"
+
+                await self.put_response(
+                    ResponseRequest(
+                        meta_info=task_req.meta_info,
+                        token_id=token_id,
+                        generated_len=1,
+                        finish_reason=finish_reason,
+                    )
                 )
-                response_queue = GlobalState.get_response_queue(task_req.id)
-                await response_queue.put(response_req)
 
                 # 如果在prefill的时候就结束了，就不用走下一个阶段了
                 if finish_reason is not None:
                     continue
 
                 decode_req = DecodeRequest(
-                    id=task_req.id,
+                    meta_info=task_req.meta_info,
                     token_id=next_token_id,
                     attention_mask=request_attention_mask,
                     kv_cache=request_kv_cache,
@@ -113,30 +115,6 @@ class _PrefillWorker:
                 )
                 await self._next_queue.put(decode_req)
 
-
-if __name__ == "__main__":
-    from learn_llm_inference.bridge.bridge_engine import bridge_instance
-    from learn_llm_inference.bridge.tokenize_worker import _TokenizeWorker
-    from learn_llm_inference.data_model import TokenizeRequest
-
-
-    async def test():
-        workers = (
-            cast(Worker, _TokenizeWorker()),
-            cast(Worker, _PrefillWorker()),
-        )
-        for worker in workers:
-            worker.start()
-        try:
-            request = TokenizeRequest(
-                id="123",
-                messages=[{"role": "user", "content": "Who are you? Please briefly introduce yourself."}],
-            )
-
-            await bridge_instance.commit_request(request)
-            decode_request = await GlobalState.get_decode_queue().get()
-
-        finally:
-            await asyncio.gather(*(worker.stop() for worker in workers))
-
-    asyncio.run(test(), debug=True)
+    async def put_response(self, response_req: ResponseRequest) -> None:
+        response_queue = GlobalState.get_response_queue(response_req.meta_info.id)
+        await response_queue.put(response_req)
