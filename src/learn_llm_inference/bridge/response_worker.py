@@ -6,14 +6,12 @@ from learn_llm_inference.data_model import ResponseChunk
 from learn_llm_inference.llm_engine.tokenize import Tokenizer
 
 
-_STREAM_END = object()
-
 
 class _ResponseWorker:
     def __init__(self, id: str):
         self._id = id
         self._input_queue = GlobalState.get_response_queue(id)
-        self._output_queue: asyncio.Queue[ResponseChunk | Exception | object] = (
+        self._output_queue: asyncio.Queue[ResponseChunk | Exception] = (
             asyncio.Queue()
         )
         self._tokenizer = Tokenizer()
@@ -74,12 +72,10 @@ class _ResponseWorker:
     async def get_stream_response(self) -> AsyncIterator[ResponseChunk]:
         while True:
             item = await self._output_queue.get()
-            if item is _STREAM_END:
-                return
             if isinstance(item, Exception):
                 raise item
-            if not isinstance(item, ResponseChunk):
-                raise TypeError(f"unexpected response item: {type(item).__name__}")
+            if item.finished is True:
+                return
             yield item
 
     @staticmethod

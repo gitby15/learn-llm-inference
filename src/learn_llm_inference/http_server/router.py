@@ -79,7 +79,6 @@ async def openai_api(
     async def event_generator():
         first_chunk = True
         async for chunk in response_worker.get_stream_response():
-            print("chunk: ", chunk)
             delta = {"content": chunk.text}
             if first_chunk:
                 delta["role"] = "assistant"
