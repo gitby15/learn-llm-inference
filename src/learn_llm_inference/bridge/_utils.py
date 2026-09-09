@@ -1,69 +1,56 @@
 import asyncio
-import inspect
 import logging
-import time
-from functools import wraps
-from typing import Any, Protocol, TypeVar
+from abc import ABC, abstractmethod
 
 
 logger = logging.getLogger(__name__)
 
 
-class Worker(Protocol):
-    def start(self) -> None: ...
+class BaseWorker(ABC):
+    """Own the lifecycle and failure boundary of a long-running worker."""
 
-    async def stop(self) -> None: ...
+    def __init__(self) -> None:
+        self._task: asyncio.Task[None] | None = None
 
-
-WorkerType = TypeVar("WorkerType")
-
-
-def worker_lifecycle(worker_class: type[WorkerType]) -> type[WorkerType]:
-    """Add a managed asyncio task lifecycle to a worker class."""
-    if not inspect.iscoroutinefunction(
-        getattr(worker_class, "_process_task", None)
-    ):
-        raise TypeError(
-            f"{worker_class.__name__} must define an async _process_task method"
+    def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._task = asyncio.create_task(
+            self._run(),
+            name=type(self).__name__,
         )
 
-    original_init = worker_class.__init__
-
-    @wraps(original_init)
-    def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
-        original_init(self, *args, **kwargs)
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        if not self._task.done():
+            self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
 
-    def start(self: Any) -> None:
-        task = self._task
-        if task is not None and not task.done():
-            return
-
-        timestamp_suffix = f"{time.time()}"
-        task_name = f"{type(self).__name__}-{timestamp_suffix}"
-
-        async def run_process_task() -> None:
+    async def _run(self) -> None:
+        while True:
             try:
-                await self._process_task()
+                await self.run_forever()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("%s execution failed", type(self).__name__)
-                raise
+            except Exception as error:
+                logger.exception(
+                    "%s execution failed; restarting worker",
+                    type(self).__name__,
+                )
+                try:
+                    await self.handle_error(error)
+                except Exception:
+                    logger.exception(
+                        "%s failed to report request errors",
+                        type(self).__name__,
+                    )
+                await asyncio.sleep(0)
 
-        self._task = asyncio.create_task(run_process_task(), name=task_name)
+    async def handle_error(self, error: Exception) -> None:
+        """Report a worker-level failure before the processing loop restarts."""
 
-    async def stop(self: Any) -> None:
-        task = self._task
-        if task is None:
-            return
-
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        self._task = None
-
-    setattr(worker_class, "__init__", __init__)
-    setattr(worker_class, "start", start)
-    setattr(worker_class, "stop", stop)
-    return worker_class
+    @abstractmethod
+    async def run_forever(self) -> None:
+        """Process queued work until cancelled or an unexpected error occurs."""

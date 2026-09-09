@@ -9,7 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from learn_llm_inference.data_model import ChatMessage, TokenizeRequest, MetaInfo
+from learn_llm_inference.data_model import (
+    ChatMessage,
+    ErrorEvent,
+    MetaInfo,
+    RequestContext,
+    TokenizeRequest,
+)
 from learn_llm_inference.bridge.bridge_engine import bridge_instance
 
 
@@ -73,40 +79,71 @@ async def healthy() -> dict[str, str]:
 async def openai_api(
     request: OpenAIRequest,
 ) -> StreamingResponse:
-    id = f"chatcmpl-{uuid4().hex}"
-    tokenize_req = TokenizeRequest(
+    request_id = f"chatcmpl-{uuid4().hex}"
+    context = RequestContext(
         meta_info=MetaInfo(
-            id=id,
-            max_tokens=request.max_completion_tokens or request.max_tokens or 512,
-        ),
+            id=request_id,
+            max_tokens=(
+                request.max_completion_tokens or request.max_tokens or 512
+            ),
+        )
+    )
+    tokenize_req = TokenizeRequest(
+        context=context,
         messages=request.messages,
     )
-    response_worker, remove_response_worker = await bridge_instance.commit_request(tokenize_req)
+    response_worker = await bridge_instance.commit_request(tokenize_req)
 
     async def event_generator():
-        first_chunk = True
-        async for chunk in response_worker.get_stream_response():
-            delta = {"content": chunk.text}
-            if first_chunk:
-                delta["role"] = "assistant"
-                first_chunk = False
-
-            payload = {
-                "id": chunk.id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": delta,
-                        "finish_reason": chunk.finish_reason,
+        try:
+            first_chunk = True
+            async for event in response_worker.get_stream_response():
+                # Todo: 直接把异常raise到外面，是不是简单一些
+                if isinstance(event, ErrorEvent):
+                    error_payload = {
+                        "error": {
+                            "message": event.message,
+                            "type": event.type,
+                            "param": event.param,
+                            "code": event.code,
+                        }
                     }
-                ],
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    break
+
+                delta = {"content": event.text}
+                if first_chunk:
+                    delta["role"] = "assistant"
+                    first_chunk = False
+
+                payload = {
+                    "id": event.id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": delta,
+                            "finish_reason": event.finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception:
+            fallback_error = ErrorEvent.internal()
+            error_payload = {
+                "error": {
+                    "message": fallback_error.message,
+                    "type": fallback_error.type,
+                    "param": fallback_error.param,
+                    "code": fallback_error.code,
+                }
             }
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(error_payload)}\n\n"
+        finally:
+            response_worker.close()
         yield "data: [DONE]\n\n"
-        remove_response_worker(id)
 
     return StreamingResponse(
         event_generator(),

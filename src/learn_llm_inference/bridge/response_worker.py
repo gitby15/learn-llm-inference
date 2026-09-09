@@ -1,51 +1,22 @@
-import asyncio
+import logging
 from collections.abc import AsyncIterator
 
-from learn_llm_inference.bridge.global_state import GlobalState
-from learn_llm_inference.data_model import ResponseChunk
+from learn_llm_inference.data_model import (
+    ErrorEvent,
+    RequestContext,
+    ResponseChunk,
+)
 from learn_llm_inference.llm_engine.tokenize import Tokenizer
 
 
+logger = logging.getLogger(__name__)
+
 
 class _ResponseWorker:
-    def __init__(self, id: str):
-        self._id = id
-        self._input_queue = GlobalState.get_response_queue(id)
-        self._output_queue: asyncio.Queue[ResponseChunk | Exception] = (
-            asyncio.Queue()
-        )
+    def __init__(self, context: RequestContext):
+        self._context = context
         self._tokenizer = Tokenizer()
         self._token_cache: list[int] = []
-        self._task = asyncio.create_task(
-            self._process_task(),
-            name=f"response-worker-{id}",
-        )
-
-    async def _process_task(self) -> None:
-        while True:
-            request = await self._input_queue.get()
-            if request.meta_info.id != self._id:
-                raise ValueError(
-                    f"expected response for {self._id}, got {request.meta_info.id}"
-                )
-
-            self._token_cache.append(request.token_id)
-            text = self._tokenizer.decode(self._token_cache)
-            chunk_text = self._take_text(text, finish_reason=request.finish_reason)
-
-            if chunk_text or request.finish_reason is not None:
-                await self._output_queue.put(
-                    ResponseChunk(
-                        id=request.meta_info.id,
-                        text=chunk_text,
-                        generated_len=request.generated_len,
-                        finish_reason=request.finish_reason,
-                    )
-                )
-
-            if request.finish_reason is not None:
-                return
-            
 
     def _take_text(self, text: str, *, finish_reason: str | None) -> str:
         # 达到输出条件，就输出当前缓存中的文本
@@ -62,14 +33,43 @@ class _ResponseWorker:
         self._token_cache.clear()
         return text
 
-    async def get_stream_response(self) -> AsyncIterator[ResponseChunk]:
+    async def get_stream_response(
+        self,
+    ) -> AsyncIterator[ResponseChunk | ErrorEvent]:
         while True:
-            item = await self._output_queue.get()
-            if isinstance(item, Exception):
-                raise item
-            yield item
-            if item.finish_reason is not None:
+            event = await self._context.response_queue.get()
+            if isinstance(event, ErrorEvent):
+                yield event
                 return
+
+            try:
+                self._token_cache.append(event.token_id)
+                text = self._tokenizer.decode(self._token_cache)
+                chunk_text = self._take_text(
+                    text,
+                    finish_reason=event.finish_reason,
+                )
+            except Exception:
+                logger.exception(
+                    "Response decoding failed for request %s",
+                    self._context.meta_info.id,
+                )
+                yield ErrorEvent.internal()
+                return
+
+            if chunk_text or event.finish_reason is not None:
+                yield ResponseChunk(
+                    id=self._context.meta_info.id,
+                    text=chunk_text,
+                    generated_len=event.generated_len,
+                    finish_reason=event.finish_reason,
+                )
+
+            if event.finish_reason is not None:
+                return
+
+    def close(self) -> None:
+        self._context.cancel()
 
     @staticmethod
     def _is_cjk_character(codepoint: int) -> bool:
