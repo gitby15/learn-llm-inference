@@ -4,10 +4,9 @@ from typing import Any, TypeAlias, TypedDict
 
 import torch
 
-
 class ChatMessage(TypedDict):
     role: str
-    content: str
+    content: str | list[dict[str, str]]
 
 
 @dataclass(slots=True)
